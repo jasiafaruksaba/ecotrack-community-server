@@ -79,6 +79,20 @@ router.post("/join/:id", verifyToken, async (req, res) => {
     joinDate: new Date()
   });
 
+  // PATCH /api/userChallenges/:id
+router.patch("/userChallenges/:id", verifyToken, async (req, res) => {
+  const userChallengeId = req.params.id;
+  const { progress, status } = req.body;
+
+  await req.app.locals.db.collection("userChallenges").updateOne(
+    { _id: new ObjectId(userChallengeId), userId: req.user.uid },
+    { $set: { progress, status, updatedAt: new Date() } }
+  );
+
+  res.json({ message: "Progress updated" });
+});
+
+
   // Increment participants in challenge
   await req.app.locals.db.collection("challenges").updateOne(
     { _id: new ObjectId(challengeId) },
