@@ -3,14 +3,34 @@ const cors = require('cors');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 require('dotenv').config();
 
-
+// Import API Routes
+const challengesRouter = require('./routes/challenges');
+const tipsRouter = require('./routes/tips');
+const eventsRouter = require('./routes/events');
+const userChallengesRouter = require('./routes/userChallenges');
 
 const app = express();
 const port = process.env.PORT || 3000;
 
 
-// middleware
-app.use(cors());
+// Middleware
+const allowedOrigins = [
+  'http://localhost:5173', // Your client development URL
+  process.env.CLIENT_LIVE_URL // e.g., Netlify/Surge URL for client
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
+  credentials: true
+}));
 app.use(express.json())
 
 const uri = process.env.MONGODB_URI;
@@ -40,91 +60,28 @@ async function run() {
 
     console.log(" MongoDB Connected Successfully!");
 
-      // Get all challenges
-    app.get("/api/challenges", async (req, res) => {
-  const limit = parseInt(req.query.limit) || 6;
-  const challenges = await challengesCollection.find().limit(limit).toArray();
-  res.json(challenges);
-});
+    // Pass collections to routers
+    app.use('/api/challenges', challengesRouter(challengesCollection, userChallengesCollection));
+    app.use('/api/tips', tipsRouter(tipsCollection));
+    app.use('/api/events', eventsRouter(eventsCollection));
+    app.use('/api/user-challenges', userChallengesRouter(userChallengesCollection));
 
-    // Get single challenge
-    app.get("/api/challenges/:id", async (req, res) => {
-      const id = req.params.id;
-      const result = await challengesCollection.findOne({ _id: new ObjectId(id) });
-      res.send(result);
+   // Base route
+    app.get('/', (req, res) => {
+      res.send('EcoTrack Server is running!');
     });
 
-       // Add new challenge
-    app.post("/api/challenges", async (req, res) => {
-      const challenge = req.body;
-      const result = await challengesCollection.insertOne(challenge);
-      res.send(result);
+    // 404 Handler (Must be the last route)
+    app.use((req, res) => {
+        res.status(404).json({ message: '404: API endpoint not found' });
     });
 
-    // Update challenge
-    app.patch("/api/challenges/:id", async (req, res) => {
-      const id = req.params.id;
-      const data = req.body;
-      const result = await challengesCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: data }
-      );
-      res.send(result);
+    app.listen(port, () => {
+      console.log(`EcoTrack Server running on port ${port}`);
     });
 
-    // Delete challenge
-    app.delete("/api/challenges/:id", async (req, res) => {
-      const id = req.params.id;
-      const result = await challengesCollection.deleteOne({ _id: new ObjectId(id) });
-      res.send(result);
-    });
-
-    // Tips
-    app.get("/api/tips", async (req, res) => {
-  const limit = parseInt(req.query.limit) || 5;
-  const tips = await tipsCollection.find().sort({ createdAt: -1 }).limit(limit).toArray();
-  res.json(tips);
-});
-
-    // Events
-    app.get("/api/events", async (req, res) => {
-  const limit = parseInt(req.query.limit) || 4;
-  const events = await eventsCollection.find().sort({ date: 1 }).limit(limit).toArray();
-  res.json(events);
-});
-
-// GET /api/stats
-app.get("/api/stats", async (req, res) => {
-  const stats = await challengesCollection.aggregate([
-    { $group: { _id: null, totalCO2: { $sum: "$co2Saved" }, totalPlastic: { $sum: "$plasticSaved" } } }
-  ]).toArray();
-  res.json({ co2: stats[0]?.totalCO2 || 0, plastic: stats[0]?.totalPlastic || 0 });
-});
-
-
-    // Join Challenge
-    app.post("/api/challenges/join/:id", async (req, res) => {
-      const { userId } = req.body;
-      const challengeId = req.params.id;
-
-      await userChallengesCollection.insertOne({
-        userId,
-        challengeId,
-        status: "Not Started",
-        progress: 0,
-        joinDate: new Date(),
-      });
-
-      await challengesCollection.updateOne(
-        { _id: new ObjectId(challengeId) },
-        { $inc: { participants: 1 } }
-      );
-
-      res.send({ success: true });
-    });
-
-  } catch (error) {
-    console.error(" Database connection failed:", error);
+  } catch (e) {
+    console.error(e);
   }
 }
 run().catch(console.dir);
