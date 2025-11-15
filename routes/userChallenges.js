@@ -1,62 +1,152 @@
-// server/routes/userChallenges.js
-const router = require('express').Router();
-const { ObjectId } = require('mongodb');
-const verifyToken = require('../middleware/verifyToken');
+// routes/userChallenges.js
+const express = require('express');
 
-module.exports = (userChallengesCollection) => {
+module.exports = ({ userChallengesCollection, challengesCollection, ObjectId, admin }) => {
+  const router = express.Router();
 
-    // PATCH /api/user-challenges/:id/progress - Update User Progress (Protected)
-    router.patch('/:id/progress', verifyToken, async (req, res) => {
-        const { id } = req.params; // The _id of the UserChallenges document
-        const { newProgress, status } = req.body;
-        const userId = req.user.uid; // The user attempting to update
+  // GET my challenges (needs auth)
+  router.get('/my', async (req, res) => {
+    try {
+      const uid = req.user.uid;
+      console.log('Fetching user challenges for UID:', uid);
 
-        // Basic validation
-        if (newProgress === undefined || typeof newProgress !== 'number' || newProgress < 0 || newProgress > 100) {
-            return res.status(400).json({ message: 'Invalid progress value (must be 0-100)' });
-        }
+      const userChallenges = await userChallengesCollection
+        .find({ userId: uid })
+        .toArray();
 
-        try {
-            const result = await userChallengesCollection.updateOne(
-                {
-                    _id: new ObjectId(id),
-                    userId: userId // Security: Ensure only the owner can update
-                },
-                {
-                    $set: {
-                        progress: newProgress,
-                        status: status || (newProgress === 100 ? 'Finished' : 'Ongoing'), // Auto-set status
-                        lastUpdate: new Date()
-                    }
-                }
-            );
+      console.log('Found user challenges:', userChallenges.length);
+      res.json(userChallenges);
+    } catch (err) {
+      console.error('Error fetching user challenges:', err);
+      res.status(500).json({ error: 'Failed to fetch user challenges' });
+    }
+  });
 
-            if (result.modifiedCount === 0) {
-                // If it fails, check if the document exists but the user doesn't own it
-                const docExists = await userChallengesCollection.findOne({ _id: new ObjectId(id) });
-                if (docExists) {
-                    return res.status(403).json({ message: 'Forbidden: You cannot update this progress.' });
-                }
-                return res.status(404).json({ message: 'User Challenge record not found.' });
-            }
+  // UPDATE progress
+  router.patch('/:id', async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { progress, status } = req.body;
+      const uid = req.user.uid;
 
-            res.json({ message: 'Progress updated successfully' });
-        } catch (error) {
-            console.error('Error updating progress:', error);
-            res.status(500).json({ message: 'Failed to update progress' });
-        }
-    });
+      const update = {
+        $set: {
+          progress,
+          status: status || 'Ongoing',
+          updatedAt: new Date(),
+        },
+      };
 
-    // GET /api/user-challenges/my-activities - Get all challenges for logged-in user (Protected)
-    router.get('/my-activities', verifyToken, async (req, res) => {
-        const userId = req.user.uid;
-        try {
-            const activities = await userChallengesCollection.find({ userId: userId }).toArray();
-            res.json(activities);
-        } catch (error) {
-            res.status(500).json({ message: 'Failed to fetch user activities' });
-        }
-    });
+      const result = await userChallengesCollection.updateOne(
+        { _id: new ObjectId(id), userId: uid },
+        update
+      );
 
-    return router;
+      if (result.matchedCount === 0) {
+        return res.status(404).json({ error: 'Challenge not found or not yours' });
+      }
+
+      res.json({ modified: result.modifiedCount });
+    } catch (err) {
+      console.error('Error updating challenge:', err);
+      res.status(500).json({ error: 'Failed to update' });
+    }
+  });
+
+  // POST: Join a challenge
+  router.post('/join', async (req, res) => {
+    try {
+      const { challengeId } = req.body;
+      const uid = req.user.uid;
+
+      if (!challengeId) {
+        return res.status(400).json({ error: 'challengeId is required' });
+      }
+
+      // Check if challenge exists
+      const challenge = await challengesCollection.findOne({
+        _id: new ObjectId(challengeId),
+      });
+      if (!challenge) {
+        return res.status(404).json({ error: 'Challenge not found' });
+      }
+
+      // Check if already joined
+      const alreadyJoined = await userChallengesCollection.findOne({
+        userId: uid,
+        challengeId: new ObjectId(challengeId),
+      });
+      if (alreadyJoined) {
+        return res.status(400).json({ error: 'Already joined this challenge' });
+      }
+
+      // Insert join record
+      const result = await userChallengesCollection.insertOne({
+        userId: uid,
+        challengeId: new ObjectId(challengeId),
+        progress: 0,
+        status: 'Ongoing',
+        joinedAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      // Increment participants count
+      await challengesCollection.updateOne(
+        { _id: new ObjectId(challengeId) },
+        { $inc: { participants: 1 } }
+      );
+
+      res.json({ message: 'Joined successfully', id: result.insertedId });
+    } catch (err) {
+      console.error('Error joining challenge:', err);
+      res.status(500).json({ error: 'Server error' });
+    }
+  });
+
+  // GET: Participants of a challenge
+  router.get('/participants/:challengeId', async (req, res) => {
+    try {
+      const { challengeId } = req.params;
+
+      if (!ObjectId.isValid(challengeId)) {
+        return res.status(400).json({ error: 'Invalid challenge ID' });
+      }
+
+      // Get all join records
+      const joins = await userChallengesCollection
+        .find({ challengeId: new ObjectId(challengeId) })
+        .toArray();
+
+      if (joins.length === 0) {
+        return res.json([]);
+      }
+
+      // Extract Firebase UIDs
+      const uids = joins.map(j => j.userId);
+
+      // Fetch user data from Firebase Admin SDK
+      const userRecords = await admin.auth().getUsers(
+        uids.map(uid => ({ uid }))
+      );
+
+      // Map user data
+      const participants = joins.map(join => {
+        const user = userRecords.users.find(u => u.uid === join.userId);
+        return {
+          _id: join._id,
+          displayName: user?.displayName || 'Anonymous',
+          email: user?.email || null,
+          photoURL: user?.photoURL || null,
+          joinedAt: join.joinedAt,
+        };
+      });
+
+      res.json(participants);
+    } catch (err) {
+      console.error('Error fetching participants:', err);
+      res.status(500).json({ error: 'Failed to fetch participants' });
+    }
+  });
+
+  return router;
 };

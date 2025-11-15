@@ -1,92 +1,68 @@
+// index.js
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
-require('dotenv').config();
-
-// Import API Routes
-const challengesRouter = require('./routes/challenges');
-const tipsRouter = require('./routes/tips');
-const eventsRouter = require('./routes/events');
-const userChallengesRouter = require('./routes/userChallenges');
+const { MongoClient, ObjectId } = require('mongodb');
+const admin = require('firebase-admin');
 
 const app = express();
-const port = process.env.PORT || 3000;
+app.use(cors());
+app.use(express.json());
 
-
-// Middleware
-const allowedOrigins = [
-  'http://localhost:5173', // Your client development URL
-  process.env.CLIENT_LIVE_URL // e.g., Netlify/Surge URL for client
-];
-
-app.use(cors({
-  origin: (origin, callback) => {
-    // allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.indexOf(origin) === -1) {
-      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
-      return callback(new Error(msg), false);
-    }
-    return callback(null, true);
-  },
-  credentials: true
-}));
-app.use(express.json())
-
-const uri = process.env.MONGODB_URI;
-
-
-const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  }
+// Firebase
+const serviceAccount = require("./ecotrack-community-firebase-admin-key.json");
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
 });
 
-app.get('/', (req, res) =>{
-    res.send('Ecotract community server is running')
-})
+// MongoDB
+const uri = process.env.MONGODB_URI;
+if (!uri) {
+  console.error("MONGODB_URI is missing in .env file");
+  process.exit(1);
+}
 
-async function run() {
+const client = new MongoClient(uri);
+
+async function start() {
   try {
     await client.connect();
+    console.log("Connected to MongoDB");
 
- const db = client.db("EcoTrackDB");
-    const challengesCollection = db.collection("challenges");
-    const tipsCollection = db.collection("tips");
-    const eventsCollection = db.collection("events");
-    const userChallengesCollection = db.collection("userChallenges");
+    const db = client.db('EcoTrackDB');;
+    const challengesCollection = db.collection('challenges');
+    const tipsCollection = db.collection('tips');
+    const eventsCollection = db.collection('events');
+    const userChallengesCollection = db.collection('userChallenges');
 
-    console.log(" MongoDB Connected Successfully!");
+    const verifyToken = require('./middleware/verifyToken')(admin);
 
-    // Pass collections to routers
-    app.use('/api/challenges', challengesRouter(challengesCollection, userChallengesCollection));
-    app.use('/api/tips', tipsRouter(tipsCollection));
-    app.use('/api/events', eventsRouter(eventsCollection));
-    app.use('/api/user-challenges', userChallengesRouter(userChallengesCollection));
+    const challengesRouter = require('./routes/challenges')({ challengesCollection, userChallengesCollection, ObjectId });
+    const tipsRouter = require('./routes/tips')({ tipsCollection });
+    const eventsRouter = require('./routes/events')({ eventsCollection });
+    const userChallengesRouter = require('./routes/userChallenges')({ userChallengesCollection, challengesCollection, ObjectId });
 
-   // Base route
+    app.use('/api/challenges', challengesRouter);
+    app.use('/api/tips', tipsRouter);
+    app.use('/api/events', eventsRouter);
+    app.use('/api/userChallenges', verifyToken, userChallengesRouter);
+
+    app.get('/api/health', (req, res) => res.json({ ok: true }));
+
     app.get('/', (req, res) => {
-      res.send('EcoTrack Server is running!');
+      res.send('<h1>EcoTrack Community API</h1><p>Go to <a href="/api/challenges">/api/challenges</a></p>');
     });
 
-    // 404 Handler (Must be the last route)
     app.use((req, res) => {
-        res.status(404).json({ message: '404: API endpoint not found' });
+      res.status(404).send('<h1>404 - Not Found</h1>');
     });
 
-    app.listen(port, () => {
-      console.log(`EcoTrack Server running on port ${port}`);
-    });
-
-  } catch (e) {
-    console.error(e);
+    const port = process.env.PORT || 3000;
+    app.listen(port, () => console.log(`Server running on port ${port}`));
+  } catch (err) {
+    console.error('Startup error:', err);
+    process.exit(1);
   }
 }
-run().catch(console.dir);
 
-
-app.listen(port, () =>{
-    console.log(`Ecotrack community server is running on port: ${port}`)
-})
+start();
